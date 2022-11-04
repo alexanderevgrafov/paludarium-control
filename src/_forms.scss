@@ -1,0 +1,42 @@
+.form-group  {
+  display:flex;
+  align-items: flex-end;
+}
+.form-label  {
+  flex: 4 1 40%;
+  overflow:hidden;
+  text-overflow: ellipsis;
+}
+.form-row  {
+  flex: 5 1 auto;
+}
+
+
+.rc-slider {
+  padding: 15px 0;
+
+  .rc-slider-rail {
+	height: 2px;
+	background-color: silver;
+  }
+  .rc-slider-track {
+	height: 2px;
+	background-color: $primary;
+  }
+  .rc-slider-handle {
+	margin-left: -9px;
+	margin-top: -7px;
+	width: 18px;
+	height: 18px;
+	border-radius: 50%;
+	border: none;
+	background-color: $primary;
+  }
+
+  &.rc-slider-disabled {
+	.rc-slider-track, .rc-slider-handle {
+	  background-color: silver;
+	}
+
+  }
+}
