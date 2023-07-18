@@ -1,4 +1,5 @@
 // include <DNSServer.h>
+// include <DNSServer.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 // #include <ESP8266mDNS.h>
@@ -8,10 +9,15 @@
 #include <WiFiClient.h>
 #include <WiFiManager.h> //https://github.com/tzapu/WiFiManager
 #include <coredecls.h>   // settimeofday_cb()
+#include <WiFiManager.h> //https://github.com/tzapu/WiFiManager
+#include <coredecls.h>   // settimeofday_cb()
 #include <sys/time.h>
+#include <time.h> // time() ctime()
 #include <time.h> // time() ctime()
 
 #include "ArduinoJson.h"
+// #include "FS.h"
+// #include "LittleFS.h"  // LittleFS is declared
 // #include "FS.h"
 // #include "LittleFS.h"  // LittleFS is declared
 #include "MyTicker.h"
@@ -31,12 +37,15 @@
 // #define TZ_MN ((TZ)*60)
 #define TZ_SEC 0  //((TZ)*3600)
 #define DST_SEC 0 //((DST_MN)*60)
+#define TZ_SEC 0  //((TZ)*3600)
+#define DST_SEC 0 //((DST_MN)*60)
 
 #define SEC 1
 // #define MAX_SENSORS_COUNT 8
 // #define TEMP_BYTE_SIZE 4
 // #define STAMP_BYTE_SIZE 4
 
+// #define FILE_CHECK_EACH_HOURS 20
 // #define FILE_CHECK_EACH_HOURS 20
 #define TICKERS 3
 
@@ -48,7 +57,13 @@
 // #define ONE_WIRE_BUS 5      // D1 on board
 
 // int current_log_id = 2;
+// int current_log_id = 2;
 
+// struct event_record {
+//   time_t stamp;
+//   char event;
+//   int t[MAX_SENSORS_COUNT];
+// };
 // struct event_record {
 //   time_t stamp;
 //   char event;
@@ -73,6 +88,18 @@ struct config
   // unsigned int log;
   // unsigned int flush;
   uint8_t ledProfile;
+struct config
+{
+  bool pump;
+  bool light;
+  // int tl;
+  // int th;
+  // unsigned int ton;
+  // unsigned int toff;
+  // unsigned int read;
+  // unsigned int log;
+  // unsigned int flush;
+  uint8_t ledProfile;
 };
 
 const int MIN = SEC * 60;
@@ -82,6 +109,8 @@ const int LOG_EACH = 10 * MIN;
 const int FLUSH_LOG_EACH = 60 * MIN;
 const int DATA_BUFFER_SIZE = 150; // Maximum events we can keep in memory before Internet is back(===real time is known, and we can write a log)
 const int PIN_LED = LED_BUILTIN;  // D4 on NodeMCU and WeMos. Controls the onboard LED.
+const int DATA_BUFFER_SIZE = 150; // Maximum events we can keep in memory before Internet is back(===real time is known, and we can write a log)
+const int PIN_LED = LED_BUILTIN;  // D4 on NodeMCU and WeMos. Controls the onboard LED.
 
 bool initialConfig = false;
 
@@ -89,6 +118,8 @@ const char *strAllowOrigin = "Access-Control-Allow-Origin";
 const char *strAllowMethod = "Access-Control-Allow-Method";
 const char *strContentType = "application/json";
 
+// event_record dataLog[DATA_BUFFER_SIZE];
+// event_record curSensors;
 // event_record dataLog[DATA_BUFFER_SIZE];
 // event_record curSensors;
 
@@ -113,11 +144,14 @@ ESP8266WebServer server(80);
 int wifiConnectAttemptCounter = 0;
 
 // sensor_config sensor[MAX_SENSORS_COUNT];
+// sensor_config sensor[MAX_SENSORS_COUNT];
 
+#define LED_PROFILES_COUNT 3
 #define LED_PROFILES_COUNT 3
 #define LED_WIFI 0
 #define LED_R_ON 1
 #define LED_R_OFF 2
+unsigned led_profiles[LED_PROFILES_COUNT][7] = {
 unsigned led_profiles[LED_PROFILES_COUNT][7] = {
     2, 2, 2, 2, 2, 10, 0,
     450, 1, 5, 1, 0, 0, 0,
@@ -127,6 +161,7 @@ byte led_profile_phase = 0;
 int curPinStatus = 0;
 int prevPinStatus = 0;
 bool ledStatus = false;
+bool ledStatusPrev = true; // to make sure first cycle turns led off;
 bool ledStatusPrev = true; // to make sure first cycle turns led off;
 
 timeval tv;
@@ -165,11 +200,17 @@ void pwmLedManager2()
 {
   if (conf.ledProfile == 0)
   {
+void pwmLedManager2()
+{
+  if (conf.ledProfile == 0)
+  {
     return;
   }
   if (!led_profiles[led_current_profile][led_profile_phase])
     led_profile_phase = 0;
 
+  if (led_profiles[led_current_profile][led_profile_phase])
+  {
   if (led_profiles[led_current_profile][led_profile_phase])
   {
     led_sin_ticker.once(led_profiles[led_current_profile][led_profile_phase] / 10.0, pwmLedManager2);
@@ -181,16 +222,23 @@ void pwmLedManager2()
 
 void setLedProfile(byte profile_num)
 {
+void setLedProfile(byte profile_num)
+{
   ledStatus = false;
   led_profile_phase = 0;
+  if (profile_num == 0)
+  {
   if (profile_num == 0)
   {
     return;
   }
   led_current_profile = profile_num - 1;
+  led_current_profile = profile_num - 1;
   pwmLedManager2();
 }
 
+void serverSendHeaders()
+{
 void serverSendHeaders()
 {
   server.sendHeader(strAllowOrigin, "*");
@@ -199,13 +247,21 @@ void serverSendHeaders()
 
 void serverSend(String smth)
 {
+void serverSend(String smth)
+{
   serverSendHeaders();
   server.send(200, strContentType, smth);
 }
 
 void alignTimersToHour(bool force)
 {
+void alignTimersToHour(bool force)
+{
   // Только если start - признак интернет-времени. Без точного времени невозможно соотносить с часами.
+  if (start)
+  {
+    if (force || !timersHourAligned)
+    {
   if (start)
   {
     if (force || !timersHourAligned)
@@ -214,9 +270,13 @@ void alignTimersToHour(bool force)
 
       if (delta > 20)
       {
+      if (delta > 20)
+      {
         SERIAL_PRINT("Align to hour required after(sec): ");
         SERIAL_PRINTLN(String(delta));
 
+        timers_aligner.once(delta, [](void)
+                            { setTimers(); });
         timers_aligner.once(delta, [](void)
                             { setTimers(); });
         timersHourAligned = true;
@@ -227,15 +287,20 @@ void alignTimersToHour(bool force)
 
 void timeSyncCb()
 {
+void timeSyncCb()
+{
   gettimeofday(&tv, NULL);
 
   SERIAL_PRINTLN("--Time sync event--");
+  if (start == 0)
+  {
   if (start == 0)
   {
     SERIAL_PRINT("Start time is set == ");
     nowTime = time(nullptr);
     start = nowTime;
     SERIAL_PRINTLN(start);
+    // flushLogIntoFile();
     // flushLogIntoFile();
   }
 
@@ -249,8 +314,14 @@ void setTimers()
   // tickers[0].attach(conf.read, scanSensors);
   // tickers[1].attach(conf.log, putSensorsIntoDataLog);
   // tickers[2].attach(conf.flush, flushLogIntoFile);
+  // tickers[0].attach(conf.read, scanSensors);
+  // tickers[1].attach(conf.log, putSensorsIntoDataLog);
+  // tickers[2].attach(conf.flush, flushLogIntoFile);
 }
 
+void changePinStatus()
+{
+  SERIAL_PRINTLN("ChangePinStatus...");
 void changePinStatus()
 {
   SERIAL_PRINTLN("ChangePinStatus...");
@@ -277,6 +348,7 @@ void handleInfo()
   nowTime = time(nullptr);
 
   unsigned long upTime = start ? nowTime - start : millis() / 1000;
+  unsigned long upTime = start ? nowTime - start : millis() / 1000;
 
   msg += "\"up\":" + String(upTime) + ",conf:" + configToJson() + '}';
 
@@ -288,7 +360,13 @@ void handleSet()
   conf.light = server.arg("l").toInt() > 0;
   conf.pump = server.arg("p").toInt() > 0;
   conf.ledProfile = server.arg("b").toInt() % (LED_PROFILES_COUNT + 1);
+void handleSet()
+{
+  conf.light = server.arg("l").toInt() > 0;
+  conf.pump = server.arg("p").toInt() > 0;
+  conf.ledProfile = server.arg("b").toInt() % (LED_PROFILES_COUNT + 1);
 
+  SERIAL_PRINT("SetConf<---");
   SERIAL_PRINT("SetConf<---");
 
   changePinStatus();
@@ -321,6 +399,7 @@ void wifiConnectionCycle()
     settimeofday_cb(timeSyncCb);
     configTime(TZ_SEC, DST_SEC, "pool.ntp.org");
 
+    server.on("/set", handleSet);
     server.on("/set", handleSet);
     server.on("/info", handleInfo);
 
@@ -355,6 +434,7 @@ WiFiManager wifiManager;
   delay(1000);
 
   // WiFi.begin("GreenBox", "sobaka-enot");
+  // WiFi.begin("GreenBox", "sobaka-enot");
 
   wifiManager.setConfigPortalTimeout(240);
   // if (WiFi.SSID() != "")
@@ -363,6 +443,13 @@ WiFiManager wifiManager;
   wifiManager.autoConnect("Paludarium_ESP8266");
   //wifiManager.setConnectTimeout(300);
 
+  // ToDo------
+  //  SERIAL_PRINTLN("Connecting");
+  //  while (WiFi.status() != WL_CONNECTED) {
+  //    delay(2500);
+  //    SERIAL_PRINTLN(WiFi.status());
+  //  }
+  //  SERIAL_PRINTLN();
   // ToDo------
   //  SERIAL_PRINTLN("Connecting");
   //  while (WiFi.status() != WL_CONNECTED) {
@@ -379,8 +466,14 @@ WiFiManager wifiManager;
   // digitalWrite(PIN_LED, HIGH); // Turn led off as we are not in configuration mode.
   //  For some unknown reason webserver can only be started once per boot up
   //  so webserver can not be used again in the sketch.
+  // digitalWrite(PIN_LED, HIGH); // Turn led off as we are not in configuration mode.
+  //  For some unknown reason webserver can only be started once per boot up
+  //  so webserver can not be used again in the sketch.
 }
 
+void setup()
+{
+  // byte sensBuff[9 * MAX_SENSORS_COUNT];
 void setup()
 {
   // byte sensBuff[9 * MAX_SENSORS_COUNT];
@@ -394,9 +487,14 @@ void setup()
   SERIAL_PRINTLN("\n Starting");
   // setCurrentEvent('b');
   // putSensorsIntoDataLog();
+  // setCurrentEvent('b');
+  // putSensorsIntoDataLog();
 
   analogWrite(LED_PIN, 300); // Just light up for setup period
+  analogWrite(LED_PIN, 300); // Just light up for setup period
 
+  // DS18B20.begin();
+  // LittleFS.begin();
   // DS18B20.begin();
   // LittleFS.begin();
 
@@ -404,9 +502,15 @@ void setup()
 
   // sensorsCount = DS18B20.getDeviceCount();
   // sensorsCount = MAX_SENSORS_COUNT > sensorsCount ? sensorsCount : MAX_SENSORS_COUNT;
+  // sensorsCount = DS18B20.getDeviceCount();
+  // sensorsCount = MAX_SENSORS_COUNT > sensorsCount ? sensorsCount : MAX_SENSORS_COUNT;
 
   // configFromFile();
+  // configFromFile();
 
+  // sensorsPrepareAddresses();
+  // sensorsBufferFromFile(sensBuff);
+  // sensorsApplyBufferOn(sensBuff);
   // sensorsPrepareAddresses();
   // sensorsBufferFromFile(sensBuff);
   // sensorsApplyBufferOn(sensBuff);
@@ -418,6 +522,8 @@ void setup()
   digitalWrite(PIN_LIGHT, HIGH);
 }
 
+void loop()
+{
 void loop()
 {
   int i;
