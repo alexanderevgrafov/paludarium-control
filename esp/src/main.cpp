@@ -1,9 +1,9 @@
 // include <DNSServer.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
-//#include <ESP8266mDNS.h>
-#include <DallasTemperature.h>
-#include <OneWire.h>
+// #include <ESP8266mDNS.h>
+// #include <DallasTemperature.h>
+// #include <OneWire.h>
 #include <Ticker.h>
 #include <WiFiClient.h>
 #include <WiFiManager.h> //https://github.com/tzapu/WiFiManager
@@ -16,16 +16,16 @@
 // #include "LittleFS.h"  // LittleFS is declared
 #include "MyTicker.h"
 
-#define CONFIG_FILE "conf2"
-#define SENSORS_FILE "sensors2"
-//#define DATA_FILE "data"
-#define DATA_DIR "/d"
-#define DATA_DIR_SLASH "/d/"
+// #define CONFIG_FILE "conf2"
+// #define SENSORS_FILE "sensors2"
+// #define DATA_FILE "data"
+// #define DATA_DIR "/d"
+// #define DATA_DIR_SLASH "/d/"
 
-#define FS_BLOCK_SIZE 8180
-//#define FS_BLOCK_SIZE 1020
+// #define FS_BLOCK_SIZE 8180
+// #define FS_BLOCK_SIZE 1020
 
-#define WIFI_CONFIG_DURATION_SEC 240
+
 // #define TZ 3      // (utc+) TZ in hours
 // #define DST_MN 0  // use 60mn for summer time in some countries
 // #define TZ_MN ((TZ)*60)
@@ -34,15 +34,18 @@
 
 #define SEC 1
 // #define MAX_SENSORS_COUNT 8
-#define TEMP_BYTE_SIZE 4
-#define STAMP_BYTE_SIZE 4
+// #define TEMP_BYTE_SIZE 4
+// #define STAMP_BYTE_SIZE 4
 
 // #define FILE_CHECK_EACH_HOURS 20
 #define TICKERS 3
 
+//  GPIO numbers for pind D0-4:   16, 5, 4, 0, 2
 #define LED_PIN LED_BUILTIN // 4       // D2 on board
-#define RELAY_PIN 14        // D5 on NodeMCU and WeMos.
-#define ONE_WIRE_BUS 5      // D1 on board
+#define PIN_LIGHT 16        // GPIO D0
+#define PIN_PUMP 5          // GPIO D1
+// #define RELAY_PIN 14        // D5 on NodeMCU and WeMos.
+// #define ONE_WIRE_BUS 5      // D1 on board
 
 // int current_log_id = 2;
 
@@ -52,11 +55,11 @@
 //   int t[MAX_SENSORS_COUNT];
 // };
 
-struct sensor_config
-{
-  uint8_t addr[8];
-  uint8_t weight;
-};
+// struct sensor_config
+// {
+//   uint8_t addr[8];
+//   uint8_t weight;
+// };
 
 struct config
 {
@@ -89,7 +92,7 @@ const char *strContentType = "application/json";
 // event_record dataLog[DATA_BUFFER_SIZE];
 // event_record curSensors;
 
-config conf = {true, true, 0};
+config conf = {false, true, 0};
 
 Ticker led_sin_ticker;
 Ticker timers_aligner;
@@ -97,12 +100,17 @@ Ticker timers_aligner;
 MyTicker tickers[TICKERS];
 bool timersHourAligned = false;
 
-const size_t capacity = JSON_OBJECT_SIZE(7) * 2 + 50;
+// const size_t capacity = JSON_OBJECT_SIZE(7) * 2 + 50;
 
-DynamicJsonDocument doc(capacity);
-OneWire oneWire(ONE_WIRE_BUS);
-DallasTemperature DS18B20(&oneWire);
+// DynamicJsonDocument doc(capacity);
+// OneWire oneWire(ONE_WIRE_BUS);
+// DallasTemperature DS18B20(&oneWire);
+
+#define WIFI_CONFIG_DURATION_SEC 240
+#define WIFI_RETRY_FIRST_INTERVAL 60
+#define WIFI_RETRY_MAX_INTERVAL 7200
 ESP8266WebServer server(80);
+int wifiConnectAttemptCounter = 0;
 
 // sensor_config sensor[MAX_SENSORS_COUNT];
 
@@ -116,6 +124,8 @@ unsigned led_profiles[LED_PROFILES_COUNT][7] = {
     1, 5, 1, 450, 0, 0, 0};
 byte led_current_profile = LED_WIFI;
 byte led_profile_phase = 0;
+int curPinStatus = 0;
+int prevPinStatus = 0;
 bool ledStatus = false;
 bool ledStatusPrev = true; // to make sure first cycle turns led off;
 
@@ -232,23 +242,6 @@ void timeSyncCb()
   alignTimersToHour(false);
 }
 
-void setRelay(bool set)
-{
-  relayOn = set;
-
-  digitalWrite(RELAY_PIN, relayOn ? HIGH : LOW);
-
-  SERIAL_PRINT("Relay is ");
-  SERIAL_PRINTLN(relayOn ? "ON" : "OFF");
-
-  relaySwitchedAt = nowTime;
-
-  // setCurrentEvent(relayOn ? 'n' : 'f');
-
-  // putSensorsIntoDataLog();
-  flushLogIntoFile();
-}
-
 void setTimers()
 {
   SERIAL_PRINTLN("Set timers");
@@ -263,6 +256,8 @@ void changePinStatus()
   SERIAL_PRINTLN("ChangePinStatus...");
 
   setLedProfile(conf.ledProfile);
+  digitalWrite(PIN_LIGHT, conf.light ? HIGH : LOW);
+  digitalWrite(PIN_PUMP, conf.pump ? HIGH : LOW);
 }
 
 String configToJson()
@@ -301,7 +296,7 @@ void handleSet()
   handleInfo();
 }
 
-void isWiFiConnected()
+boolean isWiFiConnected()
 {
   SERIAL_PRINTLN("WiFi");
   SERIAL_PRINTLN(WiFi.localIP().toString());
@@ -312,12 +307,16 @@ P.S. I, also, found that in the BasicOTA example, it uses while (WiFi.waitForCon
   */
   if (WiFi.localIP().toString() == "0.0.0.0")
   {
-    SERIAL_PRINTLN("No wifi located - set time for next period. ");
     //  SERIAL_PRINTLN(WiFi.status());
-
-    timers_aligner.once(WIFI_CHECK_PERIOD, isWiFiConnected);
+    return false;
   }
-  else
+
+  return true;
+}
+
+void wifiConnectionCycle()
+{
+  if (isWiFiConnected())
   {
     settimeofday_cb(timeSyncCb);
     configTime(TZ_SEC, DST_SEC, "pool.ntp.org");
@@ -330,13 +329,25 @@ P.S. I, also, found that in the BasicOTA example, it uses while (WiFi.waitForCon
     SERIAL_PRINT("IP is ");
     SERIAL_PRINTLN(WiFi.localIP().toString());
     WiFi.printDiag(Serial);
-  }
+    return;
+  } 
+    
+    
+ // ESP.restart();
+  
+  wifiConnectAttemptCounter++;
+  int interval = max(wifiConnectAttemptCounter * WIFI_RETRY_FIRST_INTERVAL, WIFI_RETRY_MAX_INTERVAL);
+  timers_aligner.once(interval, wifiConnectionCycle);
+  
+  SERIAL_PRINTLN("No wifi located - set next attempt after " + String(interval) );
+
+  WiFi.begin( "BlackCatTbilisi", "KuraRiver");
 }
 
 void WiFiSetup()
 {
-  WiFiManager wifiManager;
 
+WiFiManager wifiManager;
   setLedProfile(LED_WIFI);
 
   SERIAL_PRINTLN("Waiting wifi");
@@ -346,10 +357,11 @@ void WiFiSetup()
   // WiFi.begin("GreenBox", "sobaka-enot");
 
   wifiManager.setConfigPortalTimeout(240);
-  if (WiFi.SSID() != "")
-    wifiManager.setConfigPortalTimeout(WIFI_CONFIG_DURATION_SEC); // If no access point name has been previously entered disable timeout.
+  // if (WiFi.SSID() != "")
+  //   wifiManager.setConfigPortalTimeout(WIFI_CONFIG_DURATION_SEC); // If no access point name has been previously entered disable timeout.
 
   wifiManager.autoConnect("Paludarium_ESP8266");
+  //wifiManager.setConnectTimeout(300);
 
   // ToDo------
   //  SERIAL_PRINTLN("Connecting");
@@ -362,7 +374,7 @@ void WiFiSetup()
   // SERIAL_PRINTLN("Connected, IP address: ");
   // SERIAL_PRINTLN(WiFi.localIP());
 
-  isWiFiConnected();
+  wifiConnectionCycle();
 
   // digitalWrite(PIN_LED, HIGH); // Turn led off as we are not in configuration mode.
   //  For some unknown reason webserver can only be started once per boot up
@@ -375,7 +387,8 @@ void setup()
 
   pinMode(PIN_LED, OUTPUT);
   pinMode(LED_PIN, OUTPUT);
-  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(PIN_LIGHT, OUTPUT);
+  pinMode(PIN_PUMP, OUTPUT);
 
   Serial.begin(115200);
   SERIAL_PRINTLN("\n Starting");
@@ -402,8 +415,7 @@ void setup()
 
   setTimers();
 
-  // scanSensors();
-  // putSensorsIntoDataLog();
+  digitalWrite(PIN_LIGHT, HIGH);
 }
 
 void loop()
@@ -413,7 +425,7 @@ void loop()
 
   if (ledStatus != ledStatusPrev)
   {
-      SERIAL_PRINTLN(ledStatus);
+    SERIAL_PRINTLN(ledStatus);
     analogWrite(LED_PIN, ledStatus ? 0 : 600);
     ledStatusPrev = ledStatus;
   }
