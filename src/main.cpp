@@ -4,6 +4,7 @@
 // #include <ESP8266mDNS.h>
 // #include <DallasTemperature.h>
 // #include <OneWire.h>
+#include <Updater.h>
 #include <Ticker.h>
 #include <WiFiClient.h>
 #include <WiFiManager.h> //https://github.com/tzapu/WiFiManager
@@ -83,6 +84,13 @@ const int FLUSH_LOG_EACH = 60 * MIN;
 const int DATA_BUFFER_SIZE = 150; // Maximum events we can keep in memory before Internet is back(===real time is known, and we can write a log)
 const int PIN_LED = LED_BUILTIN;  // D4 on NodeMCU and WeMos. Controls the onboard LED.
 
+#define WIFI_RETRY_BEFORE_REBOOT 2
+#define REBOOT_IF_NO_API_ACCESS_IN_SEC 30 * 60
+#define CHECK_WIFI_TIME 1000 * 60 * 3
+int wifiDisconnectCounter = 0;
+int64_t lastWifiCheck = 0;
+int64_t lastApiAccess = 0;
+
 bool initialConfig = false;
 
 const char *strAllowOrigin = "Access-Control-Allow-Origin";
@@ -96,6 +104,7 @@ config conf = {false, true, 0};
 
 Ticker led_sin_ticker;
 Ticker timers_aligner;
+Ticker wifi_checker;
 
 MyTicker tickers[TICKERS];
 bool timersHourAligned = false;
@@ -111,6 +120,11 @@ bool timersHourAligned = false;
 #define WIFI_RETRY_MAX_INTERVAL 7200
 ESP8266WebServer server(80);
 int wifiConnectAttemptCounter = 0;
+
+#define WIFI_CHECK_INTERVAL 60*30 // Every half hour we check if wifi is connected
+#define WIFI_REBOOT_FAILURES 2  // after 2 consequitive problem controller is rebooting
+
+byte wifiCheckProblemsCounter = 0;   // WifiProblemsCounter
 
 // sensor_config sensor[MAX_SENSORS_COUNT];
 
@@ -161,35 +175,50 @@ void flushLogIntoFile(void);
 #define SERIAL_PRINTLN(msg) ;
 #endif
 
-void pwmLedManager2()
-{
-  if (conf.ledProfile == 0)
-  {
-    return;
-  }
-  if (!led_profiles[led_current_profile][led_profile_phase])
-    led_profile_phase = 0;
+const char *otaIndexHtml =
+    "<script>function doU(){"
+    "const inp=document.getElementById('fileUpload');"
+    "const prgr=document.getElementById('prgr');"
+    "new Promise(rs=>{"
+    "const xhr=new XMLHttpRequest();"
+    "xhr.upload.addEventListener('progress',e=>prgr.innerText=`Progress: ${Math.round((e.loaded/e.total)*100)}%`);"
+    "xhr.addEventListener('load',rs);"
+    "xhr.open('POST','/update',true);"
+    "const fd=new FormData();fd.append('0',inp.files[0]);"
+    "xhr.send(fd);"
+    "}).finally(()=>window.location='/info');}</script>"
+    "Firmware update: <input type='file' id='fileUpload'/><button onclick='doU()'>GO</button><div id='prgr'></div>";
 
-  if (led_profiles[led_current_profile][led_profile_phase])
-  {
-    led_sin_ticker.once(led_profiles[led_current_profile][led_profile_phase] / 10.0, pwmLedManager2);
 
-    ledStatus = !ledStatus;
-    led_profile_phase++;
-  }
-}
+// void pwmLedManager2()
+// {
+//   if (conf.ledProfile == 0)
+//   {
+//     return;
+//   }
+//   if (!led_profiles[led_current_profile][led_profile_phase])
+//     led_profile_phase = 0;
 
-void setLedProfile(byte profile_num)
-{
-  ledStatus = false;
-  led_profile_phase = 0;
-  if (profile_num == 0)
-  {
-    return;
-  }
-  led_current_profile = profile_num - 1;
-  pwmLedManager2();
-}
+//   if (led_profiles[led_current_profile][led_profile_phase])
+//   {
+//     led_sin_ticker.once(led_profiles[led_current_profile][led_profile_phase] / 10.0, pwmLedManager2);
+
+//     ledStatus = !ledStatus;
+//     led_profile_phase++;
+//   }
+// }
+
+// void setLedProfile(byte profile_num)
+// {
+//   ledStatus = false;
+//   led_profile_phase = 0;
+//   if (profile_num == 0)
+//   {
+//     return;
+//   }
+//   led_current_profile = profile_num - 1;
+//   pwmLedManager2();
+// }
 
 void serverSendHeaders()
 {
@@ -203,44 +232,50 @@ void serverSend(String smth)
   server.send(200, strContentType, smth);
 }
 
-void alignTimersToHour(bool force)
+void serverHtmlSend(String smth)
 {
-  // Только если start - признак интернет-времени. Без точного времени невозможно соотносить с часами.
-  if (start)
-  {
-    if (force || !timersHourAligned)
-    {
-      int delta = ceil(nowTime / 3600.0) * 3600 - nowTime;
-
-      if (delta > 20)
-      {
-        SERIAL_PRINT("Align to hour required after(sec): ");
-        SERIAL_PRINTLN(String(delta));
-
-        timers_aligner.once(delta, [](void)
-                            { setTimers(); });
-        timersHourAligned = true;
-      }
-    }
-  }
+  serverSendHeaders();
+  server.send(200, "text/html", smth);
 }
 
-void timeSyncCb()
-{
-  gettimeofday(&tv, NULL);
+// void alignTimersToHour(bool force)
+// {
+//   // Только если start - признак интернет-времени. Без точного времени невозможно соотносить с часами.
+//   if (start)
+//   {
+//     if (force || !timersHourAligned)
+//     {
+//       int delta = ceil(nowTime / 3600.0) * 3600 - nowTime;
 
-  SERIAL_PRINTLN("--Time sync event--");
-  if (start == 0)
-  {
-    SERIAL_PRINT("Start time is set == ");
-    nowTime = time(nullptr);
-    start = nowTime;
-    SERIAL_PRINTLN(start);
-    // flushLogIntoFile();
-  }
+//       if (delta > 20)
+//       {
+//         SERIAL_PRINT("Align to hour required after(sec): ");
+//         SERIAL_PRINTLN(String(delta));
 
-  alignTimersToHour(false);
-}
+//         timers_aligner.once(delta, [](void)
+//                             { setTimers(); });
+//         timersHourAligned = true;
+//       }
+//     }
+//   }
+// }
+
+// void timeSyncCb()
+// {
+//   gettimeofday(&tv, NULL);
+
+//   SERIAL_PRINTLN("--Time sync event--");
+//   if (start == 0)
+//   {
+//     SERIAL_PRINT("Start time is set == ");
+//     nowTime = time(nullptr);
+//     start = nowTime;
+//     SERIAL_PRINTLN(start);
+//     // flushLogIntoFile();
+//   }
+
+//   alignTimersToHour(false);
+// }
 
 void setTimers()
 {
@@ -255,7 +290,7 @@ void changePinStatus()
 {
   SERIAL_PRINTLN("ChangePinStatus...");
 
-  setLedProfile(conf.ledProfile);
+  // setLedProfile(conf.ledProfile);
   digitalWrite(PIN_LIGHT, conf.light ? HIGH : LOW);
   digitalWrite(PIN_PUMP, conf.pump ? HIGH : LOW);
 }
@@ -278,9 +313,14 @@ void handleInfo()
 
   unsigned long upTime = start ? nowTime - start : millis() / 1000;
 
-  msg += "\"up\":" + String(upTime) + ",\"conf\":" + configToJson() + '}';
+  msg += "\"up\":" + String(upTime);
+  msg += ",\"conf\":";
+  msg += configToJson();
+  msg += ",\"ver\":\"" __DATE__ " " __TIME__ "\""; 
+  msg += "}";
 
   serverSend(msg);
+  lastApiAccess = millis();
 }
 
 void handleSet()
@@ -291,14 +331,56 @@ void handleSet()
   if (server.arg("p").length()>0) {
     conf.pump = server.arg("p").toInt() > 0;
   }
-  if (server.arg("b").length()>0) {
-    conf.ledProfile = server.arg("b").toInt() % (LED_PROFILES_COUNT + 1);
-  }
+  // if (server.arg("b").length()>0) {
+  //   conf.ledProfile = server.arg("b").toInt() % (LED_PROFILES_COUNT + 1);
+  // }
   SERIAL_PRINT("SetConf<---");
 
   changePinStatus();
 
   handleInfo();
+}
+
+void handleOtaIndex()
+{
+   serverHtmlSend(otaIndexHtml);
+}
+
+void handleUploadFirst(){
+  if (Update.hasError()) {
+       serverSend("ERROR: " + String(Update.getErrorString()));
+        SERIAL_PRINTLN("OTA ERROR: " + String(Update.getErrorString()));
+  } else {
+       serverSend("OK");
+               SERIAL_PRINTLN("OTA OK ");
+  }
+
+  ESP.restart();
+}
+
+void handleUploadSecond(){
+  HTTPUpload& upload = server.upload();
+    if (upload.status == UPLOAD_FILE_START) {
+      // Serial.printf("Update: %s\n", upload.filename.c_str());
+      SERIAL_PRINTLN("OTA Started: "); 
+           uint32_t maxSketchSpace = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
+      if (!Update.begin(maxSketchSpace, U_FLASH)) { //start with 400kb file
+             SERIAL_PRINTLN("OTA error no space for " + String(maxSketchSpace)+ "b"); 
+      }
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+        // Update.printError(Serial);
+             SERIAL_PRINTLN("OTA error of write"); 
+      }
+      SERIAL_PRINTLN("OTA progress: " + String(upload.currentSize)); 
+    } else if (upload.status == UPLOAD_FILE_END) {
+      if (Update.end(true)) { //true to set the size to the current progress
+        // Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
+         SERIAL_PRINTLN("OTA ended... Rebooting..."); 
+      } else {
+        // Update.printError(Serial);
+      }
+    }
 }
 
 boolean isWiFiConnected()
@@ -319,15 +401,27 @@ P.S. I, also, found that in the BasicOTA example, it uses while (WiFi.waitForCon
   return true;
 }
 
+void wifiCheckConnection() {
+    if (WiFi.status() != WL_CONNECTED) {
+      if (++wifiCheckProblemsCounter > WIFI_REBOOT_FAILURES) {
+          ESP.restart();
+      }
+    } else {
+      wifiCheckProblemsCounter = 0;
+    }
+}
+
 void wifiConnectionCycle()
 {
   if (isWiFiConnected())
   {
-    settimeofday_cb(timeSyncCb);
+    // settimeofday_cb(timeSyncCb);
     configTime(TZ_SEC, DST_SEC, "pool.ntp.org");
 
     server.on("/set", handleSet);
     server.on("/info", handleInfo);
+    server.on("/ota", handleOtaIndex);
+    server.on("/update", HTTP_POST, handleUploadFirst, handleUploadSecond);
 
     server.begin();
 
@@ -339,18 +433,18 @@ void wifiConnectionCycle()
 
   wifiConnectAttemptCounter++;
   int interval = max(wifiConnectAttemptCounter * WIFI_RETRY_FIRST_INTERVAL, WIFI_RETRY_MAX_INTERVAL);
-  timers_aligner.once(interval, wifiConnectionCycle);
+  // timers_aligner.once(interval, wifiConnectionCycle);
 
-  SERIAL_PRINTLN("No wifi located - set next attempt after " + String(interval) );
+  SERIAL_PRINTLN("No wifi located - next after " + String(interval) );
 
-  WiFi.begin( "BlackCatTbilisi", "KuraRiver");
+  // WiFi.begin( "BlackCatTbilisi", "KuraRiver");
 }
 
 void WiFiSetup()
 {
 
 WiFiManager wifiManager;
-  setLedProfile(LED_WIFI);
+  // setLedProfile(LED_WIFI);
 
   SERIAL_PRINTLN("Waiting wifi");
   WiFi.mode(WIFI_STA);
@@ -403,6 +497,7 @@ void setup()
   // LittleFS.begin();
 
   WiFiSetup();
+  wifi_checker.attach( WIFI_CHECK_INTERVAL, wifiCheckConnection);
 
   // sensorsCount = DS18B20.getDeviceCount();
   // sensorsCount = MAX_SENSORS_COUNT > sensorsCount ? sensorsCount : MAX_SENSORS_COUNT;
@@ -413,7 +508,7 @@ void setup()
   // sensorsBufferFromFile(sensBuff);
   // sensorsApplyBufferOn(sensBuff);
 
-  setLedProfile(LED_R_OFF);
+  // setLedProfile(LED_R_OFF);
 
   setTimers();
 
@@ -423,6 +518,33 @@ void setup()
 void loop()
 {
   int i;
+    unsigned long currentMillis = millis();
+  // if WiFi is down, try reconnecting every CHECK_WIFI_TIME seconds
+  if (currentMillis - lastWifiCheck >= CHECK_WIFI_TIME) // Every three minutes
+  {
+    if (!isWiFiConnected())
+    {
+      if (++wifiDisconnectCounter >= WIFI_RETRY_BEFORE_REBOOT)  // 2times 
+      {
+        SERIAL_PRINTLN("Reboot ESP - no wifi connected");
+        ESP.restart();
+      }
+      SERIAL_PRINTLN("Reconnecting to WiFi...");
+      WiFi.disconnect();
+      WiFi.reconnect();
+    }
+    else
+    {
+      wifiDisconnectCounter = 0;
+    }
+    lastWifiCheck = currentMillis;
+    if (currentMillis - lastApiAccess > REBOOT_IF_NO_API_ACCESS_IN_SEC * 1000) {
+       SERIAL_PRINTLN("Reboot ESP - no api calls");
+       ESP.restart();
+    }
+  }
+
+
   server.handleClient();
 
   if (ledStatus != ledStatusPrev)
