@@ -73,7 +73,7 @@ struct config
   // unsigned int read;
   // unsigned int log;
   // unsigned int flush;
-  uint8_t ledProfile;
+ //  uint8_t ledProfile;
 };
 
 const int MIN = SEC * 60;
@@ -100,10 +100,10 @@ const char *strContentType = "application/json";
 // event_record dataLog[DATA_BUFFER_SIZE];
 // event_record curSensors;
 
-config conf = {false, true, 0};
+config conf = {false, true};
 
-Ticker led_sin_ticker;
-Ticker timers_aligner;
+// Ticker led_sin_ticker;
+// Ticker timers_aligner;
 Ticker wifi_checker;
 
 MyTicker tickers[TICKERS];
@@ -119,9 +119,9 @@ bool timersHourAligned = false;
 #define WIFI_RETRY_FIRST_INTERVAL 60
 #define WIFI_RETRY_MAX_INTERVAL 7200
 ESP8266WebServer server(80);
-int wifiConnectAttemptCounter = 0;
+// int wifiConnectAttemptCounter = 0;
 
-#define WIFI_CHECK_INTERVAL 60*30 // Every half hour we check if wifi is connected
+#define WIFI_CHECK_INTERVAL 60*5 // Every 5mins we check if wifi is connected
 #define WIFI_REBOOT_FAILURES 2  // after 2 consequitive problem controller is rebooting
 
 byte wifiCheckProblemsCounter = 0;   // WifiProblemsCounter
@@ -140,8 +140,8 @@ byte led_current_profile = LED_WIFI;
 byte led_profile_phase = 0;
 int curPinStatus = 0;
 int prevPinStatus = 0;
-bool ledStatus = false;
-bool ledStatusPrev = true; // to make sure first cycle turns led off;
+// bool ledStatus = false;
+// bool ledStatusPrev = true; // to make sure first cycle turns led off;
 
 timeval tv;
 timespec tp;
@@ -300,7 +300,7 @@ String configToJson()
   String msg = "{";
   msg += "\"pump\":" + String(conf.pump ? "1" : "0");
   msg += ",\"light\":" + String(conf.light ? "1" : "0");
-  msg += ",\"ledProfile\":" + String(conf.ledProfile);
+  // msg += ",\"ledProfile\":" + String(conf.ledProfile);
   msg += "}";
   return msg;
 }
@@ -402,7 +402,7 @@ P.S. I, also, found that in the BasicOTA example, it uses while (WiFi.waitForCon
 }
 
 void wifiCheckConnection() {
-    if (WiFi.status() != WL_CONNECTED) {
+    if (isWiFiConnected()) {
       if (++wifiCheckProblemsCounter > WIFI_REBOOT_FAILURES) {
           ESP.restart();
       }
@@ -431,11 +431,11 @@ void wifiConnectionCycle()
     return;
   }
 
-  wifiConnectAttemptCounter++;
-  int interval = max(wifiConnectAttemptCounter * WIFI_RETRY_FIRST_INTERVAL, WIFI_RETRY_MAX_INTERVAL);
+  // wifiConnectAttemptCounter++;
+  // int interval = max(wifiConnectAttemptCounter * WIFI_RETRY_FIRST_INTERVAL, WIFI_RETRY_MAX_INTERVAL);
   // timers_aligner.once(interval, wifiConnectionCycle);
 
-  SERIAL_PRINTLN("No wifi located - next after " + String(interval) );
+  // SERIAL_PRINTLN("No wifi located - next after " + String(interval) );
 
   // WiFi.begin( "BlackCatTbilisi", "KuraRiver");
 }
@@ -518,41 +518,41 @@ void setup()
 void loop()
 {
   int i;
-    unsigned long currentMillis = millis();
+    // unsigned long currentMillis = millis();
   // if WiFi is down, try reconnecting every CHECK_WIFI_TIME seconds
-  if (currentMillis - lastWifiCheck >= CHECK_WIFI_TIME) // Every three minutes
-  {
-    if (!isWiFiConnected())
-    {
-      if (++wifiDisconnectCounter >= WIFI_RETRY_BEFORE_REBOOT)  // 2times 
-      {
-        SERIAL_PRINTLN("Reboot ESP - no wifi connected");
-        ESP.restart();
-      }
-      SERIAL_PRINTLN("Reconnecting to WiFi...");
-      WiFi.disconnect();
-      WiFi.reconnect();
-    }
-    else
-    {
-      wifiDisconnectCounter = 0;
-    }
-    lastWifiCheck = currentMillis;
-    if (currentMillis - lastApiAccess > REBOOT_IF_NO_API_ACCESS_IN_SEC * 1000) {
-       SERIAL_PRINTLN("Reboot ESP - no api calls");
-       ESP.restart();
-    }
-  }
+  // if (currentMillis - lastWifiCheck >= CHECK_WIFI_TIME) // Every three minutes
+  // {
+  //   if (!isWiFiConnected())
+  //   {
+  //     if (++wifiDisconnectCounter >= WIFI_RETRY_BEFORE_REBOOT)  // 2times 
+  //     {
+  //       SERIAL_PRINTLN("Reboot ESP - no wifi connected");
+  //       ESP.restart();
+  //     }
+  //     SERIAL_PRINTLN("Reconnecting to WiFi...");
+  //     WiFi.disconnect();
+  //     WiFi.reconnect();
+  //   }
+  //   else
+  //   {
+  //     wifiDisconnectCounter = 0;
+  //   }
+  //   lastWifiCheck = currentMillis;
+  //   if (currentMillis - lastApiAccess > REBOOT_IF_NO_API_ACCESS_IN_SEC * 1000) {
+  //      SERIAL_PRINTLN("Reboot ESP - no api calls");
+  //      ESP.restart();
+  //   }
+  // }
 
 
   server.handleClient();
 
-  if (ledStatus != ledStatusPrev)
-  {
-    SERIAL_PRINTLN(ledStatus);
-    analogWrite(LED_PIN, ledStatus ? 0 : 600);
-    ledStatusPrev = ledStatus;
-  }
+  // if (ledStatus != ledStatusPrev)
+  // {
+  //   SERIAL_PRINTLN(ledStatus);
+  //   analogWrite(LED_PIN, ledStatus ? 0 : 600);
+  //   ledStatusPrev = ledStatus;
+  // }
 
   for (i = 0; i < TICKERS; i++)
     if (tickers[i].armed())
